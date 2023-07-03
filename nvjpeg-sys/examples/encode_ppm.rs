@@ -1,7 +1,7 @@
 use std::ptr::null_mut;
 
 use custos::{CUDA, Buffer};
-use nvjpeg_sys::{nvjpegEncoderParamsCreate, nvjpegEncoderParams_t, check, nvjpegHandle_t, nvjpegCreateSimple, nvjpegEncoderStateCreate, nvjpegEncoderState_t, nvjpegEncodeImage, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB, nvjpegInputFormat_t_NVJPEG_INPUT_RGB, nvjpegImage_t, nvjpegEncoderParamsSetSamplingFactors, nvjpegChromaSubsampling_t_NVJPEG_CSS_444, nvjpegChromaSubsampling_t_NVJPEG_CSS_420};
+use nvjpeg_sys::{nvjpegEncoderParamsCreate, nvjpegEncoderParams_t, check, nvjpegHandle_t, nvjpegCreateSimple, nvjpegEncoderStateCreate, nvjpegEncoderState_t, nvjpegEncodeImage, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB, nvjpegInputFormat_t_NVJPEG_INPUT_RGB, nvjpegImage_t, nvjpegEncoderParamsSetSamplingFactors, nvjpegChromaSubsampling_t_NVJPEG_CSS_444, nvjpegChromaSubsampling_t_NVJPEG_CSS_420, nvjpegEncodeRetrieveBitstream, nvjpegChromaSubsampling_t_NVJPEG_CSS_410};
 
 
 pub struct PPMImage {
@@ -43,10 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for pixel in raw_data[data.len()+5..].chunks(3) {
         debug_assert_eq!(pixel.len(), 3);
         r.push(pixel[0]);
-        g.push(pixel[0]);
-        b.push(pixel[0]);
-
-//        println!("{pixel:?}");
+        g.push(pixel[1]);
+        b.push(pixel[2]);
     }
 
     debug_assert_eq!(r.len(), (width * height) as usize);
@@ -93,11 +91,6 @@ unsafe fn encode_raw_ppm(mut ppm_image: PPMImage, device: &CUDA) -> Result<(), B
     source.pitch[0] = ppm_image.width as usize;
     source.pitch[1] = ppm_image.width as usize;
     source.pitch[2] = ppm_image.width as usize;
-
-
-    source.channel[0] = ppm_image.r.as_mut_ptr().cast();
-    source.channel[1] = ppm_image.g.as_mut_ptr().cast();
-    source.channel[2] = ppm_image.b.as_mut_ptr().cast();
     
     let r = Buffer::from((device, ppm_image.r));
     let g = Buffer::from((device, ppm_image.g));
@@ -113,6 +106,16 @@ unsafe fn encode_raw_ppm(mut ppm_image: PPMImage, device: &CUDA) -> Result<(), B
     check!(status, "Could not encode ppm image.");
 
     device.stream().sync()?;
+
+    let mut len = 0;
+    let status = nvjpegEncodeRetrieveBitstream(handle, encoder_state, null_mut(), &mut len, device.stream().0 as _);
+    check!(status, "Cannot retrieve length from bitstream");
+
+    let mut jpeg_data = vec![0u8; len];
+    let status = nvjpegEncodeRetrieveBitstream(handle, encoder_state, jpeg_data.as_mut_ptr(), &mut len, device.stream().0 as _);
+    check!(status, "Cannot retrieve data from bitstream");
+
+    std::fs::write("encoded_jpeg.jpg", jpeg_data)?;
 
     // free resources
 
