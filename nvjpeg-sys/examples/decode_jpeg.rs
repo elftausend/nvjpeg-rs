@@ -4,7 +4,7 @@ use custos::{cuda::api::Stream, Buffer, CUDA};
 use nvjpeg_sys::{
     nvjpegChromaSubsampling_t, nvjpegCreateSimple, nvjpegDecode, nvjpegDestroy, nvjpegGetImageInfo,
     nvjpegHandle_t, nvjpegImage_t, nvjpegJpegStateCreate, nvjpegJpegStateDestroy,
-    nvjpegJpegState_t, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGBI,
+    nvjpegJpegState_t, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGBI, check,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -21,13 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[derive(Debug, Default)]
 pub struct Image {}
 
-macro_rules! check {
-    ($status:ident, $err:literal) => {
-        if $status != 0 {
-            Err(format!("{}. Error occured with code: {}", $err, $status))?
-        }
-    };
-}
+
 
 unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<dyn std::error::Error + Send + Sync>> {
     let mut handle: nvjpegHandle_t = null_mut();

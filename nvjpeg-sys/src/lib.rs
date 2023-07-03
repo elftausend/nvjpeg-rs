@@ -7,3 +7,12 @@
 mod bindings;
 
 pub use bindings::*;
+
+#[macro_export]
+macro_rules! check {
+    ($status:ident, $err:literal) => {
+        if $status != 0 {
+            Err(format!("{}. Error occured with code: {}", $err, $status))?
+        }
+    };
+}
