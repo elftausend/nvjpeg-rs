@@ -19,6 +19,8 @@ pub const libraryPropertyType_t_MAJOR_VERSION: libraryPropertyType_t = 0;
 pub const libraryPropertyType_t_MINOR_VERSION: libraryPropertyType_t = 1;
 pub const libraryPropertyType_t_PATCH_LEVEL: libraryPropertyType_t = 2;
 pub type libraryPropertyType_t = ::std::os::raw::c_uint;
+use std::ptr::null_mut;
+
 pub use self::libraryPropertyType_t as libraryPropertyType;
 pub const nvjpegStatus_t_NVJPEG_STATUS_SUCCESS: nvjpegStatus_t = 0;
 pub const nvjpegStatus_t_NVJPEG_STATUS_NOT_INITIALIZED: nvjpegStatus_t = 1;
@@ -91,6 +93,23 @@ pub struct nvjpegImage_t {
     pub channel: [*mut ::std::os::raw::c_uchar; 4usize],
     pub pitch: [usize; 4usize],
 }
+
+impl Default for nvjpegImage_t {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl nvjpegImage_t {
+    pub fn new() -> Self {
+        nvjpegImage_t {
+            channel: [null_mut(); 4],
+            pitch: [0; 4],
+        }
+    }
+}
+
 #[test]
 fn bindgen_test_layout_nvjpegImage_t() {
     const UNINIT: ::std::mem::MaybeUninit<nvjpegImage_t> = ::std::mem::MaybeUninit::uninit();
