@@ -24,12 +24,12 @@ pub struct Image {}
 macro_rules! check {
     ($status:ident, $err:literal) => {
         if $status != 0 {
-            return Err(format!("{}. Error occured with code: {}", $err, $status))
+            Err(format!("{}. Error occured with code: {}", $err, $status))?
         }
     };
 }
 
-unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, String> {
+unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<dyn std::error::Error + Send + Sync>> {
     let mut handle: nvjpegHandle_t = null_mut();
 
     let status = nvjpegCreateSimple(&mut handle);
@@ -85,6 +85,7 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Strin
     );
     check!(status, "Could not decode image. ");
 
+    device.stream().sync()?;
 
     println!("channel: {channel0:?}");
 
