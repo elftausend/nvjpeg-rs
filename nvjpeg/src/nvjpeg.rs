@@ -1,6 +1,6 @@
 use std::ptr::null_mut;
 
-use nvjpeg_sys::{nvjpegHandle_t, nvjpegCreateSimple};
+use nvjpeg_sys::{nvjpegHandle_t, nvjpegCreateSimple, nvjpegJpegState_t, nvjpegJpegStateCreate};
 
 use crate::error::{NVJpegError, ToNVJpegResult};
 
@@ -32,6 +32,32 @@ impl Drop for JpegHandle {
     fn drop(&mut self) {
         unsafe {
             nvjpeg_sys::nvjpegDestroy(self.inner);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct JpegState {
+    inner: nvjpegJpegState_t
+}
+
+impl JpegState {
+    #[inline]
+    pub fn new(handle: &JpegHandle) -> Result<Self, NVJpegError> {
+        let mut inner = null_mut();
+        unsafe {
+            nvjpegJpegStateCreate(handle.inner, &mut inner).to_result()?;
+        }
+
+        Ok(JpegState { inner })
+    }
+}
+
+
+impl Drop for JpegState {
+    fn drop(&mut self) {
+        unsafe {
+            nvjpeg_sys::nvjpegJpegStateDestroy(self.inner);
         }
     }
 }
