@@ -1,4 +1,4 @@
-use std::ptr::null_mut;
+use std::{ptr::null_mut, io::Write};
 
 use custos::{cuda::api::Stream, Buffer, CUDA};
 use nvjpeg_sys::{
@@ -85,9 +85,26 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<d
     );
     check!(status, "Could not decode image. ");
 
-    device.stream().sync()?;
+    //device.stream().sync()?;
 
-    println!("channel: {channel0:?}");
+    let channel0 = channel0.read();
+    let channel1 = channel1.read();
+    let channel2 = channel2.read();
+
+    let file = std::fs::File::create("cat_798x532.ppm")?;
+    let mut writer = std::io::BufWriter::new(file);
+    writer.write(format!("P6\n{} {}\n255\n", widths[0], heights[0]).as_bytes())?;
+
+    for row in 0..heights[0] {
+        let row = row as usize;
+        for col in 0..widths[0] {
+            let col = col as usize;
+            writer.write(&[channel0[row * widths[0] as usize + col], channel1[row * widths[0] as usize + col], channel2[row * widths[0] as usize + col]])?;
+        }
+    }
+
+    writer.flush()?;
+
 
     // free
 
