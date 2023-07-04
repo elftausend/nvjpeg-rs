@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 
 [dev-dependencies]
-custos = { version="0.6", default-features=false, features=["cuda"] }
+#custos = { version="0.6", default-features=false, features=["cuda"] }
+custos = { path = "../../custos", default-features=false, features=["cuda", "static-api"] }
 
