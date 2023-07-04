@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
-
     println!("cargo:rerun-if-changed=build.rs");
 
     if std::env::var("DOCS_RS").is_ok() {

@@ -12,7 +12,7 @@ pub enum NVJpegError {
     ArchMismatch = 7,
     InternalError = 8,
     ImplementationNotSupported = 9,
-    IncompleteBitstream = 10,    
+    IncompleteBitstream = 10,
 }
 
 impl NVJpegError {
@@ -51,7 +51,6 @@ impl From<usize> for NVJpegError {
     }
 }
 
-
 pub trait ToNVJpegResult {
     fn to_result(self) -> Result<(), NVJpegError>;
 }
@@ -61,14 +60,14 @@ impl ToNVJpegResult for nvjpegStatus_t {
     fn to_result(self) -> Result<(), NVJpegError> {
         match self {
             0 => Ok(()),
-            _ => Err(NVJpegError::from(self as usize))
-        } 
+            _ => Err(NVJpegError::from(self as usize)),
+        }
     }
 }
 
 impl std::fmt::Display for NVJpegError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())        
+        f.write_str(self.as_str())
     }
 }
 

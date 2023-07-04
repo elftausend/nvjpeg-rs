@@ -1,12 +1,12 @@
 use std::ptr::null_mut;
 
-use nvjpeg_sys::{nvjpegHandle_t, nvjpegCreateSimple, nvjpegJpegState_t, nvjpegJpegStateCreate};
+use nvjpeg_sys::{nvjpegCreateSimple, nvjpegHandle_t, nvjpegJpegStateCreate, nvjpegJpegState_t};
 
 use crate::error::{NVJpegError, ToNVJpegResult};
 
 #[derive(Debug)]
 pub struct JpegHandle {
-    inner: nvjpegHandle_t
+    inner: nvjpegHandle_t,
 }
 
 impl JpegHandle {
@@ -38,7 +38,7 @@ impl Drop for JpegHandle {
 
 #[derive(Debug)]
 pub struct JpegState {
-    inner: nvjpegJpegState_t
+    inner: nvjpegJpegState_t,
 }
 
 impl JpegState {
@@ -52,7 +52,6 @@ impl JpegState {
         Ok(JpegState { inner })
     }
 }
-
 
 impl Drop for JpegState {
     fn drop(&mut self) {

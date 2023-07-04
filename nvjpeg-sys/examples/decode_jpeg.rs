@@ -1,10 +1,11 @@
-use std::{ptr::null_mut, io::Write};
+use std::{io::Write, ptr::null_mut};
 
 use custos::{cuda::api::Stream, Buffer, CUDA};
 use nvjpeg_sys::{
-    nvjpegChromaSubsampling_t, nvjpegCreateSimple, nvjpegDecode, nvjpegDestroy, nvjpegGetImageInfo,
-    nvjpegHandle_t, nvjpegImage_t, nvjpegJpegStateCreate, nvjpegJpegStateDestroy,
-    nvjpegJpegState_t, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGBI, check,
+    check, nvjpegChromaSubsampling_t, nvjpegCreateSimple, nvjpegDecode, nvjpegDestroy,
+    nvjpegGetImageInfo, nvjpegHandle_t, nvjpegImage_t, nvjpegJpegStateCreate,
+    nvjpegJpegStateDestroy, nvjpegJpegState_t, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB,
+    nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGBI,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -21,14 +22,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[derive(Debug, Default)]
 pub struct Image {}
 
-
-
-unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<dyn std::error::Error + Send + Sync>> {
+unsafe fn decode_raw_jpeg(
+    raw_data: &[u8],
+    device: &CUDA,
+) -> Result<Image, Box<dyn std::error::Error + Send + Sync>> {
     let mut handle: nvjpegHandle_t = null_mut();
 
     let status = nvjpegCreateSimple(&mut handle);
     check!(status, "Could not create simple handle. ");
-    
 
     let mut jpeg_state: nvjpegJpegState_t = null_mut();
     let status = nvjpegJpegStateCreate(handle, &mut jpeg_state);
@@ -55,7 +56,7 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<d
     println!("n_components: {n_components}, subsampling: {subsampling}, widths: {widths:?}, heights: {heights:?}");
 
     let mut image: nvjpegImage_t = nvjpegImage_t::new();
-    
+
     image.pitch[0] = widths[0] as usize;
     image.pitch[1] = widths[0] as usize;
     image.pitch[2] = widths[0] as usize;
@@ -67,7 +68,7 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<d
     image.channel[0] = channel0.cu_ptr() as *mut _;
     image.channel[1] = channel1.cu_ptr() as *mut _;
     image.channel[2] = channel2.cu_ptr() as *mut _;
-        
+
     let status = nvjpegDecode(
         handle,
         jpeg_state,
@@ -93,12 +94,15 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<d
         let row = row as usize;
         for col in 0..widths[0] {
             let col = col as usize;
-            writer.write(&[channel0[row * widths[0] as usize + col], channel1[row * widths[0] as usize + col], channel2[row * widths[0] as usize + col]])?;
+            writer.write(&[
+                channel0[row * widths[0] as usize + col],
+                channel1[row * widths[0] as usize + col],
+                channel2[row * widths[0] as usize + col],
+            ])?;
         }
     }
 
     writer.flush()?;
-
 
     // free
 
@@ -107,7 +111,6 @@ unsafe fn decode_raw_jpeg(raw_data: &[u8], device: &CUDA) -> Result<Image, Box<d
 
     let status = nvjpegDestroy(handle);
     check!(status, "Could not free nvjpeg handle. ");
-
 
     Ok(Image::default())
 }
