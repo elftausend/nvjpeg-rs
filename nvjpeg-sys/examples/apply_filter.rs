@@ -1,4 +1,4 @@
-use std::{io::Write, mem::size_of, ops::Mul, ptr::null_mut};
+use std::{io::Write, mem::size_of, ops::Mul, ptr::null_mut, time::Instant};
 
 use custos::{
     buf,
@@ -249,7 +249,7 @@ pub fn correlate_cu_padded<T: Number + CDatatype>(
             &inp_rows2,
             &inp_cols2,
             &inp_rows,
-            &inp_cols,        
+            &inp_cols,
             &filter_rows,
             &filter_cols,
         ],
@@ -259,7 +259,6 @@ pub fn correlate_cu_padded<T: Number + CDatatype>(
 
 #[test]
 fn test_correlate_cu_padded() {
-
     #[rustfmt::skip]
     let data = buf![
         1., 2., 3., 4., 
@@ -360,29 +359,140 @@ fn test_correlate_cu() {
 
 #[test]
 fn test_correlate_cu_larger() {
-
-    let rows = 5080;
-    let cols = 520;
+    let rows = 1920;
+    let cols = 1080;
 
     let data = buf![
         1.4; rows * cols
     ]
     .to_gpu();
 
-
     let filter_rows = 32;
     let filter_cols = filter_rows;
 
     let filter = buf![1.; filter_rows * filter_cols].to_gpu();
 
-    let mut out  = buf![0.; (rows - filter_rows + 1) * (cols - filter_cols +1)].to_gpu();
-    // correlate_cu(&data, &filter, &mut out, rows, cols, filter_rows, filter_cols);
-    // out.device().stream().sync().unwrap();
+    let mut out = buf![0.; (rows - filter_rows + 1) * (cols - filter_cols +1)].to_gpu();
+    correlate_cu2(
+        &data,
+        &filter,
+        &mut out,
+        rows,
+        cols,
+        filter_rows,
+        filter_cols,
+    );
+    out.device().stream().sync().unwrap();
     let start = std::time::Instant::now();
-    correlate_cu(&data, &filter, &mut out, rows, cols, filter_rows, filter_cols);
+    correlate_cu2(
+        &data,
+        &filter,
+        &mut out,
+        rows,
+        cols,
+        filter_rows,
+        filter_cols,
+    );
     out.device().stream().sync().unwrap();
     println!("elapsed: {:?}", start.elapsed());
     //println!("out: {out:?}");
+}
+
+pub fn cu_padding<T: CDatatype>(
+    input: &CUBuffer<T>,
+    out: &mut CUBuffer<T>,
+    inp_rows: usize,
+    inp_cols: usize,
+    x_padding: usize,
+    y_padding: usize,
+) {
+    let grid_x = ((inp_cols + x_padding * 2) as f32 / 16.).ceil() as u32;
+    let grid_y = ((inp_rows + y_padding * 2) as f32 / 16.).ceil() as u32;
+
+    let src = format!(
+        r#"
+        extern "C" __global__ void addPadding({dtype}* input, {dtype}* out, int inpRows, int inpCols, int xPadding, int yPadding) {{
+            int row = blockDim.x * blockIdx.x + threadIdx.x;
+            int col = blockDim.y * blockIdx.y + threadIdx.y;
+
+            if (row >= inpRows || col >= inpCols) {{
+                return;
+            }}
+
+            out[yPadding * (inpRows + xPadding * 2) + row * (inpCols + 2 * xPadding) + col] = input[row * inpCols + col];
+        }}
+    "#,
+        dtype = T::as_c_type_str()
+    );
+    launch_kernel(
+        input.device(),
+        [grid_x, grid_y, 1],
+        [16, 16, 1],
+        0,
+        &src,
+        "addPadding",
+        &[input, out, &inp_rows, &inp_cols, &x_padding, &y_padding],
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_cu_padding_la() {
+    let data = buf![1; 10000*14000].to_cuda();
+
+    let mut out = buf![0; (10000 + 2*2) * (14000+ 2*2)].to_cuda();
+    cu_padding(&data, &mut out, 10000, 14000, 2, 2);
+    data.device().stream().sync().unwrap();
+
+    let start = Instant::now();
+    cu_padding(&data, &mut out, 10000, 14000, 2, 2);
+    data.device().stream().sync().unwrap();
+    println!("elapsed: {:?}", start.elapsed());
+    
+}
+
+#[test]
+fn test_cu_padding() {
+    #[rustfmt::skip]
+    let data = buf![
+        1, 2, 3, 5, 
+        4, 3, 2, 1, 
+        8, 7, 4, 2, 
+        7, 3, 2, 1, 
+        8, 5, 3, 8
+    ].to_cuda();
+
+    let mut out = buf![0; (5 + 2*2) * (4+ 2*2)].to_cuda();
+    cu_padding(&data, &mut out, 5, 4, 2, 2);
+    println!("out: {out:?}");
+
+    for (idx, padded_val) in out.to_cpu().iter().enumerate() {
+        print!("{padded_val}, ");
+        if (idx + 1) % (2 + 2 + 4) == 0 {
+            println!()
+        }
+    }
+}
+
+#[test]
+fn test_add_padding() {
+    #[rustfmt::skip]
+    let data = [
+        1, 2, 3, 5, 
+        4, 3, 2, 1, 
+        8, 7, 4, 2, 
+        7, 3, 2, 1, 
+        8, 5, 3, 8
+    ];
+
+    let padded = add_padding(&data, 5, 4, 2, 2);
+
+    for (idx, padded_val) in padded.iter().enumerate() {
+        print!("{padded_val}, ");
+        if (idx + 1) % (2 + 2 + 4) == 0 {
+            println!()
+        }
+    }
 }
 
 pub fn add_padding<T: Number>(
@@ -404,6 +514,257 @@ pub fn add_padding<T: Number>(
         }
     }
     padded_inputs
+}
+
+pub fn correlate_cu2<T: Number + CDatatype>(
+    input: &CUBuffer<T>,
+    filter: &CUBuffer<T>,
+    out: &mut CUBuffer<T>,
+    inp_rows: usize,
+    inp_cols: usize,
+    filter_rows: usize,
+    filter_cols: usize,
+) {
+    let (out_rows, out_cols) = (inp_rows - filter_rows + 1, inp_cols - filter_cols + 1);
+
+    const THREADS: u32 = 8;
+
+    // THREADS
+    let grid_x = (out_cols as f32 / THREADS as f32).ceil() as u32;
+    let grid_y = (out_rows as f32 / THREADS as f32).ceil() as u32;
+
+    let src = format!(
+        r#"
+        extern "C" __global__ void correlate2({dtype}* input, {dtype}* filter, {dtype}* out, int inp_rows, int inp_cols, int filter_rows, int filter_cols) {{
+            int moveDown = blockDim.x * blockIdx.x + threadIdx.x;
+            int moveRight = blockDim.y * blockIdx.y + threadIdx.y;
+
+            int outRows = inp_rows - filter_rows + 1;
+            int outCols = inp_cols - filter_cols + 1;
+            if (moveDown >= outRows) {{
+                return;
+            }} 
+            if (moveRight >= outCols) {{
+                return;
+            }}
+            {dtype} sum = 0;
+            for (int filterRow = 0; filterRow < filter_rows; filterRow++) {{
+                int inputIdx = moveDown * inp_cols + moveRight + filterRow * inp_cols;  
+                for (int filterCol = 0; filterCol < filter_cols; filterCol++) {{
+                    sum += input[inputIdx + filterCol] * filter[filterRow * filter_cols + filterCol];
+                }}
+            }}
+            out[moveDown * outCols + moveRight] = sum;
+        }}
+    "#,
+        dtype = T::as_c_type_str()
+    );
+
+    launch_kernel(
+        input.device(),
+        [grid_x, grid_y, 1],
+        [THREADS, THREADS, 1],
+        0,
+        &src,
+        "correlate2",
+        &[
+            input,
+            filter,
+            out,
+            &inp_rows,
+            &inp_cols,
+            &filter_rows,
+            &filter_cols,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_correlate_cu_2() {
+    #[rustfmt::skip]
+    let data = buf![
+        1., 2., 3., 4., 
+        5., 6., 7., 8., 
+        9., 10., 11., 12., 
+        13., 14., 15., 16., 
+        17., 18., 19., 20.
+    ]
+    .to_gpu();
+
+    let filter = buf![1.; 9].to_gpu();
+    let mut out = buf![0.; data.len()].to_gpu();
+
+    correlate_cu2(&data, &filter, &mut out, 5, 4, 3, 3);
+
+    println!("out: {out:?}");
+
+    let mut cpu_out = buf![0.; out.len()];
+
+    correlate_valid_mut(
+        &data.to_cpu(),
+        (5, 4),
+        &filter.to_cpu(),
+        (3, 3),
+        &mut cpu_out,
+    );
+    assert_eq!(cpu_out.read(), out.read());
+}
+
+pub fn correlate_cu2_pad<T: Number + CDatatype>(
+    input: &CUBuffer<T>,
+    filter: &CUBuffer<T>,
+    out: &mut CUBuffer<T>,
+    inp_rows: usize,
+    inp_cols: usize,
+    filter_rows: usize,
+    filter_cols: usize,
+) {
+    const THREADS: u32 = 8;
+
+    let x_padding = filter_cols - 1;
+    let y_padding = filter_rows - 1;
+
+    let inp_rows2 = inp_rows + y_padding * 2;
+    let inp_cols2 = inp_cols + x_padding * 2;
+
+    let (out_rows, out_cols) = (inp_rows2 - filter_rows + 1, inp_cols2 - filter_cols + 1);
+
+    let grid_x = (out_rows as f32 / THREADS as f32).ceil() as u32;
+    let grid_y = (out_cols as f32 / THREADS as f32).ceil() as u32;
+
+    let src = format!(
+        r#"
+        extern "C" __global__ void correlate2({dtype}* input, {dtype}* filter, {dtype}* out, int inp_rows, int inp_cols, int unpad_rows, int unpad_cols, int filter_rows, int filter_cols) {{
+            int moveDown = blockDim.x * blockIdx.x + threadIdx.x;
+            int moveRight = blockDim.y * blockIdx.y + threadIdx.y;
+
+            int xPadding = filter_cols - 1;
+            int yPadding = filter_rows - 1;
+
+            int outRows = inp_rows - filter_rows + 1;
+            int outCols = inp_cols - filter_cols + 1;
+
+
+            if (moveDown >= outRows) {{
+                return;
+            }} 
+            if (moveRight >= outCols) {{
+                return;
+            }}
+            {dtype} sum = 0;
+            for (int filterRow = 0; filterRow < filter_rows; filterRow++) {{
+                int inputIdx = moveDown * inp_cols 
+                    + moveRight + filterRow * inp_cols
+                    - yPadding * inp_cols - xPadding;
+                    // - (outCols % moveRight == 0) * xPadding;
+
+                    // + inp_row * (inp_cols + 2 * x_padding)
+                    // + inp_col
+
+                
+
+                for (int filterCol = 0; filterCol < filter_cols; filterCol++) {{
+
+                    if (inputIdx +filterCol >= unpad_rows * unpad_cols) {{
+                        continue;
+                    }}
+                    if (inputIdx+filterCol < 0) {{
+                        continue;
+                    }}
+
+                    // print the input index + filterCol and the corresponding input value:
+                    printf("%d, %f\n", inputIdx+filterCol, input[inputIdx+filterCol]);
+                    sum += input[inputIdx + filterCol] * filter[filterRow * filter_cols + filterCol];
+                }}
+            }}
+            out[moveDown * outCols + moveRight] = sum;
+        }}
+    "#,
+        dtype = T::as_c_type_str()
+    );
+
+    launch_kernel(
+        input.device(),
+        [grid_x, grid_y, 1],
+        [THREADS, THREADS, 1],
+        0,
+        &src,
+        "correlate2",
+        &[
+            input,
+            filter,
+            out,
+            &inp_rows2,
+            &inp_cols2,
+            &inp_rows,
+            &inp_cols,
+            &filter_rows,
+            &filter_cols,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_correlate_cu_2_pad() {
+    #[rustfmt::skip]
+    let data = buf![
+        1., 2., 9., 
+        4., 5., 6., 
+        7., 8., 9., 
+    ]
+    .to_gpu();
+
+    let filter = buf![1.; 4].to_gpu();
+    let mut out = buf![0.; data.len()].to_gpu();
+
+    correlate_cu2_pad(&data, &filter, &mut out, 3, 3, 2, 2);
+
+    println!("out: {out:?}");
+
+    let mut cpu_out = buf![0.; out.len()];
+
+    correlate_fully(&data.to_cpu(), &filter.to_cpu(), &mut cpu_out, 3, 3, 2, 2);
+    println!("cpu out: {cpu_out:?}");
+    // assert_eq!(cpu_out.read(), out.read());
+}
+
+pub fn correlate_valid_mut<T: Number>(
+    lhs_slice: &[T],
+    lhs_dims: (usize, usize),
+    kernel_slice: &[T],
+    kernel_dims: (usize, usize),
+    out: &mut [T],
+) {
+    let (lhs_rows, lhs_cols) = lhs_dims;
+    let (kernel_rows, kernel_cols) = kernel_dims;
+
+    let (out_rows, out_cols) = (lhs_rows - kernel_rows + 1, lhs_cols - kernel_cols + 1);
+
+    //loop for row-axis (y)
+    //moves multiplication 1 down
+    for y in 0..out_rows {
+        //loop for col-axis (x)
+        //moves multiplication 1 to the right
+        for x in 0..out_cols {
+            let mut sum = T::default();
+            //repeat kernel rows times to use move through all kernel rows
+            for idx in 0..kernel_rows {
+                let index = idx * lhs_cols + x + y * lhs_cols;
+                let lhs_kernel_row = &lhs_slice[index..index + kernel_cols];
+
+                let index = idx * kernel_cols;
+                let kernel_row = &kernel_slice[index..index + kernel_cols];
+
+                for (i, value) in lhs_kernel_row.iter().enumerate() {
+                    sum += *value * kernel_row[i];
+                }
+            }
+            // y * final_cols + x
+            out[y * out_cols + x] = sum;
+        }
+    }
 }
 
 pub fn correlate_fully<T: Number + Mul<U, Output = T>, U: Number>(
@@ -470,28 +831,21 @@ fn test_correlate_larger() {
         1.4; rows * cols
     ];
 
-
     let filter_rows = 32;
     let filter_cols = filter_rows;
 
     let filter = buf![1.; filter_rows * filter_cols];
 
     let mut out = buf![0.; rows * cols];
-    
-    correlate_fully(&data, &filter, &mut out, rows, cols, filter_rows, filter_cols);
+
+    correlate_fully(
+        &data,
+        &filter,
+        &mut out,
+        rows,
+        cols,
+        filter_rows,
+        filter_cols,
+    );
     println!("out: {out:?}");
-}
-
-#[test]
-fn test_add_padding() {
-    let data = [1, 2, 3, 5, 4, 3, 2, 1, 8, 7, 4, 2, 7, 3, 2, 1, 8, 5, 3, 8];
-
-    let padded = add_padding(&data, 5, 4, 2, 2);
-
-    for (idx, padded_val) in padded.iter().enumerate() {
-        print!("{padded_val}, ");
-        if (idx + 1) % (2 + 2 + 4) == 0 {
-            println!()
-        }
-    }
 }
