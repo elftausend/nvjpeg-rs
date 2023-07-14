@@ -3,11 +3,12 @@ use std::{io::Write, mem::size_of, ops::Mul, ptr::null_mut, time::Instant};
 use custos::{
     buf,
     cuda::{api::culaunch_kernel, fn_cache, launch_kernel},
-    prelude::{launch_kernel1d, CUBuffer, Number},
+    prelude::{launch_kernel1d, CUBuffer, Float, Number},
+    static_api::static_cuda,
     Buffer, CDatatype, Device, CUDA,
 };
 use nvjpeg_sys::{
-    check, nvjpegChromaSubsampling_t, nvjpegCreateSimple, nvjpegDecode, nvjpegDestroy,
+    check, cu_padding, nvjpegChromaSubsampling_t, nvjpegCreateSimple, nvjpegDecode, nvjpegDestroy,
     nvjpegGetImageInfo, nvjpegHandle_t, nvjpegImage_t, nvjpegJpegStateCreate,
     nvjpegJpegStateDestroy, nvjpegJpegState_t, nvjpegOutputFormat_t_NVJPEG_OUTPUT_RGB,
 };
@@ -223,7 +224,7 @@ pub fn correlate_cu_padded<T: Number + CDatatype>(
                     sum += res[i];
                 }}
                 out[blockIdx.x] = sum;
-            }}
+            }} 
             //printf("block: %d, idx: %d, val: %f  \n", blockIdx.x, next, input[next]);
             //printf("shared val: %f  \n", res[0]);
         }} 
@@ -398,44 +399,6 @@ fn test_correlate_cu_larger() {
     //println!("out: {out:?}");
 }
 
-pub fn cu_padding<T: CDatatype>(
-    input: &CUBuffer<T>,
-    out: &mut CUBuffer<T>,
-    inp_rows: usize,
-    inp_cols: usize,
-    x_padding: usize,
-    y_padding: usize,
-) {
-    let grid_x = ((inp_cols + x_padding * 2) as f32 / 16.).ceil() as u32;
-    let grid_y = ((inp_rows + y_padding * 2) as f32 / 16.).ceil() as u32;
-
-    let src = format!(
-        r#"
-        extern "C" __global__ void addPadding({dtype}* input, {dtype}* out, int inpRows, int inpCols, int xPadding, int yPadding) {{
-            int row = blockDim.x * blockIdx.x + threadIdx.x;
-            int col = blockDim.y * blockIdx.y + threadIdx.y;
-
-            if (row >= inpRows || col >= inpCols) {{
-                return;
-            }}
-
-            out[yPadding * (inpRows + xPadding * 2) + row * (inpCols + 2 * xPadding) + col] = input[row * inpCols + col];
-        }}
-    "#,
-        dtype = T::as_c_type_str()
-    );
-    launch_kernel(
-        input.device(),
-        [grid_x, grid_y, 1],
-        [16, 16, 1],
-        0,
-        &src,
-        "addPadding",
-        &[input, out, &inp_rows, &inp_cols, &x_padding, &y_padding],
-    )
-    .unwrap();
-}
-
 #[test]
 fn test_cu_padding_la() {
     let data = buf![1; 10000*14000].to_cuda();
@@ -448,7 +411,6 @@ fn test_cu_padding_la() {
     cu_padding(&data, &mut out, 10000, 14000, 2, 2);
     data.device().stream().sync().unwrap();
     println!("elapsed: {:?}", start.elapsed());
-    
 }
 
 #[test]
@@ -527,11 +489,11 @@ pub fn correlate_cu2<T: Number + CDatatype>(
 ) {
     let (out_rows, out_cols) = (inp_rows - filter_rows + 1, inp_cols - filter_cols + 1);
 
-    const THREADS: u32 = 8;
+    const THREADS: u32 = 32;
 
     // THREADS
-    let grid_x = (out_cols as f32 / THREADS as f32).ceil() as u32;
-    let grid_y = (out_rows as f32 / THREADS as f32).ceil() as u32;
+    let grid_x = (inp_rows as f32 / THREADS as f32).ceil() as u32;
+    let grid_y = (inp_cols as f32 / THREADS as f32).ceil() as u32;
 
     let src = format!(
         r#"
@@ -541,6 +503,7 @@ pub fn correlate_cu2<T: Number + CDatatype>(
 
             int outRows = inp_rows - filter_rows + 1;
             int outCols = inp_cols - filter_cols + 1;
+
             if (moveDown >= outRows) {{
                 return;
             }} 
@@ -592,8 +555,8 @@ fn test_correlate_cu_2() {
     ]
     .to_gpu();
 
-    let filter = buf![1.; 9].to_gpu();
-    let mut out = buf![0.; data.len()].to_gpu();
+    let filter = buf![1./3.; 9].to_gpu();
+    let mut out = buf![0.; (5-3+1) * (4-3+1)].to_gpu();
 
     correlate_cu2(&data, &filter, &mut out, 5, 4, 3, 3);
 
@@ -609,6 +572,93 @@ fn test_correlate_cu_2() {
         &mut cpu_out,
     );
     assert_eq!(cpu_out.read(), out.read());
+}
+
+#[test]
+fn test_correlate_cu_larger_assert() {
+    #[rustfmt::skip]
+    let height = 1080;
+    let width = 1920;
+
+    for height in 950..1100 {
+        for width in 1500..1980 {
+            let data = (0..height * width)
+                .into_iter()
+                .map(|x| x as f32)
+                .collect::<Vec<f32>>();
+            let data = Buffer::from((static_cuda(), data));
+
+            let filter_rows = 10;
+            let filter_cols = 10;
+
+            let filter = buf![1./3.; filter_rows * filter_cols].to_gpu();
+            let mut out = buf![0.; (height-filter_rows+1) * (width-filter_cols+1)].to_gpu();
+
+            correlate_cu2(
+                &data,
+                &filter,
+                &mut out,
+                height,
+                width,
+                filter_rows,
+                filter_cols,
+            );
+
+            //println!("out: {out:?}");
+
+            let mut cpu_out = buf![0.; out.len()];
+
+            correlate_valid_mut(
+                &data.to_cpu(),
+                (height, width),
+                &filter.to_cpu(),
+                (filter_rows, filter_cols),
+                &mut cpu_out,
+            );
+
+            assert_eq_with_tolerance(&cpu_out.read(), &out.read(), 100.0);
+        }
+    }
+
+    let data = (0..height * width)
+        .into_iter()
+        .map(|x| x as f32)
+        .collect::<Vec<f32>>();
+    let data = Buffer::from((static_cuda(), data));
+
+    let filter = buf![1./3.; 9].to_gpu();
+    let mut out = buf![0.; (height-3+1) * (width-3+1)].to_gpu();
+
+    correlate_cu2(&data, &filter, &mut out, height, width, 3, 3);
+
+    //println!("out: {out:?}");
+
+    let mut cpu_out = buf![0.; out.len()];
+
+    correlate_valid_mut(
+        &data.to_cpu(),
+        (height, width),
+        &filter.to_cpu(),
+        (3, 3),
+        &mut cpu_out,
+    );
+
+    assert_eq_with_tolerance(&cpu_out.read(), &out.read(), 0.1);
+}
+
+pub fn assert_eq_with_tolerance<T: Float>(a: &[T], b: &[T], tolerance: T) {
+    assert_eq!(a.len(), b.len());
+    for i in 0..a.len() {
+        if (a[i] - b[i]).abs() >= tolerance {
+            panic!(
+                "
+LHS SIDE: {:?}, 
+            does not match with
+RHS SIDE: {:?} which value?: {}, {}",
+                a, b, a[i], b[i]
+            );
+        }
+    }
 }
 
 pub fn correlate_cu2_pad<T: Number + CDatatype>(
